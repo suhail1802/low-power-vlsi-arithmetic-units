@@ -126,5 +126,4 @@ Quantitative power, area, and propagation-delay improvements should be reported 
 This project was developed at the Centre for Nanoelectronics and VLSI Design (CNVD), VIT Chennai, as part of the B.Tech. Electronics and Communication Engineering internship project.
 
 
-B.Tech. Electronics and Communication Engineering  
-Vellore Institute of Technology, Chennai
+

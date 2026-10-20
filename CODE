@@ -1,0 +1,256 @@
+`timescale 1ns/1ps
+
+// =======================================================
+// Row-bypass full-adder cell 
+// =======================================================
+module csa_bypass_fa (
+  input  wire aibj,
+  input  wire s_in,
+  input  wire c_in,
+  input  wire bj,
+  output wire s_out,
+  output wire c_out
+);
+  wire s_fa = aibj ^ s_in ^ c_in;
+  wire c_fa = (aibj & s_in) | (aibj & c_in) | (s_in & c_in);
+  assign s_out = bj ? s_fa : s_in;
+  assign c_out = bj ? c_fa : c_in;
+endmodule
+
+// =======================================================
+// Structural Row-Bypassing NxN multiplier 
+// =======================================================
+module mulNxN_csa_row_bypass #(parameter N = 8)(
+  input  wire [N-1:0] a,
+  input  wire [N-1:0] b,
+  output wire [2*N-1:0] p
+);
+  localparam M = 2 * N;
+  wire [M-1:0] acc_stage [0:N];
+  genvar gi, j, k, idx;
+
+  generate
+    for (gi = 0; gi < M; gi = gi + 1) begin : INIT_ZERO
+      assign acc_stage[0][gi] = 1'b0;
+    end
+  endgenerate
+
+  generate
+    for (j = 0; j < N; j = j + 1) begin : ROWS
+      wire [M-1:0] partial;
+      for (idx = 0; idx < M; idx = idx + 1) begin : PART_GEN
+        if (idx >= j && idx < j + N) begin
+          assign partial[idx] = a[idx - j] & b[j];
+        end else begin
+          assign partial[idx] = 1'b0;
+        end
+      end
+
+      wire [M:0] carry_row;
+      assign carry_row[0] = 1'b0;
+
+      for (k = 0; k < M; k = k + 1) begin : COLS
+        csa_bypass_fa FA_inst (
+          .aibj(partial[k]),
+          .s_in(acc_stage[j][k]),
+          .c_in(carry_row[k]),
+          .bj(b[j]),
+          .s_out(acc_stage[j+1][k]),
+          .c_out(carry_row[k+1])
+        );
+      end
+    end
+  endgenerate
+  assign p = acc_stage[N];
+endmodule
+
+// =======================================================
+// 4-bit adder blocks (Unchanged)
+// =======================================================
+module han_carlson_4bit(input [3:0] A,B,input Cin,output [3:0] Sum,output Cout);
+  wire [3:0] G,P; wire [4:0] C;
+  assign G=A&B; assign P=A^B; assign C[0]=Cin;
+  assign C[1]=G[0]|(P[0]&C[0]);
+  assign C[2]=G[1]|(P[1]&C[1]);
+  assign C[3]=G[2]|(P[2]&C[2]);
+  assign C[4]=G[3]|(P[3]&C[3]);
+  assign Sum=P^C[3:0]; assign Cout=C[4];
+endmodule
+
+module weinberger_4bit(input [3:0] A,B,input Cin,output [3:0] Sum,output Cout);
+  wire [3:0] G,P,Gp,Pp; wire [4:0] C;
+  assign G=A&B; assign P=A^B;
+  assign Gp[0]=G[0]; assign Pp[0]=P[0];
+  assign Gp[1]=G[1]|(P[1]&Gp[0]); assign Pp[1]=P[1]&Pp[0];
+  assign Gp[2]=G[2]|(P[2]&Gp[1]); assign Pp[2]=P[2]&Pp[1];
+  assign Gp[3]=G[3]|(P[3]&Gp[2]); assign Pp[3]=P[3]&Pp[2];
+  assign C[0]=Cin;
+  assign C[1]=Gp[0]|(Pp[0]&Cin);
+  assign C[2]=Gp[1]|(Pp[1]&Cin);
+  assign C[3]=Gp[2]|(Pp[2]&Cin);
+  assign C[4]=Gp[3]|(Pp[3]&Cin);
+  assign Sum=P^C[3:0]; assign Cout=C[4];
+endmodule
+
+module ling_4bit(input [3:0] A,B,input Cin,output [3:0] Sum,output Cout);
+  wire [3:0] G,P,H; wire [4:0] C;
+  assign G=A&B; assign P=A^B; assign H[0]=G[0];
+  assign H[1]=G[1]|(P[1]&G[0]);
+  assign H[2]=G[2]|(P[2]&H[1]);
+  assign H[3]=G[3]|(P[3]&H[2]);
+  assign C[0]=Cin;
+  assign C[1]=H[0]|(P[0]&C[0]);
+  assign C[2]=H[1]|(P[1]&P[0]&C[0]);
+  assign C[3]=H[2]|(P[2]&P[1]&P[0]&C[0]);
+  assign C[4]=H[3]|(P[3]&P[2]&P[1]&P[0]&C[0]);
+  assign Sum=P^C[3:0]; assign Cout=C[4];
+endmodule
+
+// =======================================================
+// Hybrid Adder N-bit (Unchanged)
+// =======================================================
+module hybrid_adder_nbit #(parameter N=12)(
+  input  [N-1:0] A,B,
+  input          Cin,
+  output [N-1:0] Sum,
+  output         Cout
+);
+  localparam NUM_BLOCKS = (N+3)/4;
+  localparam PAD = NUM_BLOCKS*4;
+  wire [PAD-1:0] A_ext={{(PAD-N){1'b0}},A};
+  wire [PAD-1:0] B_ext={{(PAD-N){1'b0}},B};
+  wire [PAD-1:0] S_ext;
+  wire [NUM_BLOCKS:0] carry; assign carry[0]=Cin; assign Cout=carry[NUM_BLOCKS];
+  assign Sum=S_ext[N-1:0];
+  genvar i;
+  generate
+    for(i=0;i<NUM_BLOCKS;i=i+1) begin:BLK
+      wire [3:0] Ai=A_ext[i*4 +:4];
+      wire [3:0] Bi=B_ext[i*4 +:4];
+      wire [3:0] Si; wire Ci;
+      if(i%3==0) han_carlson_4bit u(Ai,Bi,carry[i],Si,Ci);
+      else if(i%3==1) weinberger_4bit u(Ai,Bi,carry[i],Si,Ci);
+      else ling_4bit u(Ai,Bi,carry[i],Si,Ci);
+      assign S_ext[i*4 +:4]=Si;
+      assign carry[i+1]=Ci;
+    end
+  endgenerate
+endmodule
+
+// =======================================================
+// Quadrant multiplier with hybrid adders 
+// =======================================================
+module mul_quadrant_rowbypass_hybrid #(parameter N=16)(
+  input  wire [N-1:0] A,
+  input  wire [N-1:0] B,
+  output wire [2*N-1:0] P
+);
+  localparam H=N/2;
+
+  // --- Partial Product Generation (Unchanged) ---
+  wire [H-1:0] A_lo=A[H-1:0], A_hi=A[N-1:H];
+  wire [H-1:0] B_lo=B[H-1:0], B_hi=B[N-1:H];
+  wire [2*H-1:0] PR,PS,QR,QS;
+  mulNxN_csa_row_bypass #(.N(H)) uPR(A_lo,B_lo,PR);
+  mulNxN_csa_row_bypass #(.N(H)) uPS(A_lo,B_hi,PS);
+  mulNxN_csa_row_bypass #(.N(H)) uQR(A_hi,B_lo,QR);
+  mulNxN_csa_row_bypass #(.N(H)) uQS(A_hi,B_hi,QS);
+
+  // --- Architecturally Compliant Adder Logic ---
+  // We will build the final sum P = PR + (PS << H) + (QR << H) + (QS << 2H)
+  // using a chain of 32-bit adders, which are themselves built from the
+  // hybrid_adder_nbit module.
+
+  // Define the shifted terms (operands for our adders)
+  wire [2*N-1:0] term_PR = PR;
+  wire [2*N-1:0] term_PS_shifted = PS << H;
+  wire [2*N-1:0] term_QR_shifted = QR << H;
+  wire [2*N-1:0] term_QS_shifted = QS << (2*H);
+
+  // Intermediate sum wires
+  wire [2*N-1:0] sum_stage1;
+  wire [2*N-1:0] sum_stage2;
+  
+  // Stage 1: Add the two middle terms: (PS << H) + (QR << H)
+  // We instantiate a 32-bit adder (N=32) using our hybrid adder module
+  hybrid_adder_nbit #(.N(2*N)) adder_stage1 (
+    .A(term_PS_shifted),
+    .B(term_QR_shifted),
+    .Cin(1'b0),
+    .Sum(sum_stage1),
+    .Cout() // Carry out is not needed for the next stage's logic
+  );
+
+  // Stage 2: Add the PR term to the result of stage 1
+  hybrid_adder_nbit #(.N(2*N)) adder_stage2 (
+    .A(sum_stage1),
+    .B(term_PR),
+    .Cin(1'b0),
+    .Sum(sum_stage2),
+    .Cout()
+  );
+
+  // Stage 3: Add the final QS term to the result of stage 2
+  // The output of this final adder is the final product P
+  hybrid_adder_nbit #(.N(2*N)) adder_stage3 (
+    .A(sum_stage2),
+    .B(term_QS_shifted),
+    .Cin(1'b0),
+    .Sum(P),
+    .Cout()
+  );
+
+endmodule
+
+`timescale 1ns/1ps
+
+// =======================================================
+//  Testbench for N=16 Multiplier (Single Test Case)
+// =======================================================
+module tb_multiplier_N16;
+
+  // --- Parameters and Signals ---
+  localparam N = 16;
+  localparam M = 2 * N; // Product width will be 32 bits
+
+  reg  [N-1:0] A;
+  reg  [N-1:0] B;
+  wire [M-1:0] P;    // Output from our multiplier (DUT)
+  wire [M-1:0] GOLD; // Expected "golden" result
+
+  // --- Instantiate the Device Under Test (DUT) ---
+  mul_quadrant_rowbypass_hybrid #(.N(N)) dut (
+      .A(A),
+      .B(B),
+      .P(P)
+  );
+
+  // --- Golden Reference Model ---
+  assign GOLD = A * B;
+
+  // --- Test Sequence ---
+  initial begin
+    $display("--- Starting Multiplier Test for N=16 ---");
+
+    // 1. Assign the single test value
+    // A = 48879 (decimal), B = 51966 (decimal)
+    A = 16'h64; 
+    B = 16'hA; 
+    
+    #10; // Wait for combinational logic to settle
+
+    // 2. Check the result
+    if (P !== GOLD) begin
+      $fatal(1, "TEST FAILED | A=%h, B=%h | DUT=%h, EXP=%h", A, B, P, GOLD);
+    end else begin
+      $display(" TEST PASSED!");
+      $display("   A = %0d (%h)", A, A);
+      $display("   B = %0d (%h)", B, B);
+      $display("   P = %0d (%h)", P, P);
+    end
+
+    // 3. Conclude
+    $finish;
+  end
+
+endmodule
